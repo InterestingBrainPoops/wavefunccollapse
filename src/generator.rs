@@ -43,7 +43,7 @@ struct Triplet {
     pub orientation: Direction,
 }
 impl Generator {
-    fn calc_pairs(&mut self, input: &DynamicImage) -> Vec<Triplet> {
+    fn calc_pairs(&mut self, input: &DynamicImage) {
         let directions = vec![
             Direction::Up,
             Direction::Down,
@@ -138,7 +138,7 @@ impl Generator {
 
         out.sort();
         out.dedup();
-        out
+        self.triplets = out;
     }
 
     pub fn gen_smart(&mut self, width: usize, height: usize) -> DynamicImage {
