@@ -2,28 +2,37 @@ use rand::{distributions::WeightedIndex, prelude::Distribution};
 
 use rand::thread_rng;
 
-use image::{GenericImage, GenericImageView, Rgba};
+use image::{GenericImage, GenericImageView, Pixel, Rgba};
 
 use std::collections::HashMap;
 
 use image::DynamicImage;
 
 pub struct Generator {
-    map: HashMap<Rgba<u8>, String>,
-    inv_map: HashMap<String, Rgba<u8>>,
-    weights: HashMap<Rgba<u8>, u64>,
+    map: HashMap<Cell, String>,
+    inv_map: HashMap<String, Cell>,
+    weights: HashMap<Cell, u64>,
     triplets: Vec<Triplet>,
 }
 
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct Cell {
+    inner: Vec<Vec<Rgba<u8>>>,
+    width: usize,
+    height: usize,
+}
+
 impl Generator {
-    pub fn new(input_image: &DynamicImage) -> Self {
+    pub fn new(input_image: &DynamicImage, cell_width: usize, cell_height: usize) -> Self {
         let mut out = Generator {
             map: HashMap::new(),
             inv_map: HashMap::new(),
             weights: HashMap::new(),
             triplets: vec![],
         };
-        out.calc_pairs(input_image);
+        assert_eq!(input_image.width() as usize % cell_width, 0);
+        assert_eq!(input_image.height() as usize % cell_height, 0);
+        out.calc_pairs(input_image, cell_width, cell_height);
         out
     }
 }
@@ -43,7 +52,7 @@ struct Triplet {
     pub orientation: Direction,
 }
 impl Generator {
-    fn calc_pairs(&mut self, input: &DynamicImage) {
+    fn calc_pairs(&mut self, input: &DynamicImage, cell_width: usize, cell_height: usize) {
         let directions = vec![
             Direction::Up,
             Direction::Down,
@@ -52,84 +61,110 @@ impl Generator {
         ];
         let mut out = vec![];
         let mut index = 0;
+        let mut all_cells = vec![];
 
-        for (_, _, col) in input.pixels() {
-            self.map.entry(col).or_insert_with(|| {
-                index += 1;
-                index.to_string()
-            });
-            self.inv_map.entry(index.to_string()).or_insert_with(|| col);
-            match self.weights.contains_key(&col) {
-                false => {
-                    self.weights.insert(col, 1);
+        for y in 0..(input.height() as usize / cell_height) {
+            let mut row = vec![];
+            for x in 0..(input.width() as usize / cell_width) {
+                let mut cell = Cell {
+                    inner: vec![vec![*Rgba::from_slice(&[0u8, 0, 0, 0]); cell_width]; cell_height],
+                    width: cell_width,
+                    height: cell_height,
+                };
+
+                for y_in in 0..cell_height {
+                    for x_in in 0..cell_width {
+                        cell.inner[y_in][x_in] =
+                            input.get_pixel((x + x_in) as u32, (y + y_in) as u32);
+                    }
                 }
-                true => {
-                    let val = self.weights.get_mut(&col).unwrap();
-                    *val += 1;
+
+                row.push(cell.clone());
+                self.map.entry(cell.clone()).or_insert_with(|| {
+                    index += 1;
+                    index.to_string()
+                });
+                self.inv_map
+                    .entry(index.to_string())
+                    .or_insert_with(|| cell.clone());
+                match self.weights.contains_key(&cell) {
+                    false => {
+                        self.weights.insert(cell.clone(), 1);
+                    }
+                    true => {
+                        let val = self.weights.get_mut(&cell).unwrap();
+                        *val += 1;
+                    }
                 }
             }
+            all_cells.push(row);
         }
-        for (x, y, color) in input.pixels() {
-            for dir in &directions {
-                match dir {
-                    Direction::Up => {
-                        if y != 0 && input.in_bounds(x, y - 1) {
-                            let px = input.get_pixel(x, y - 1);
-                            out.push(Triplet {
-                                original: self.map.get(&color).unwrap().clone(),
-                                next_to: self.map.get(&px).unwrap().clone(),
-                                orientation: Direction::Up,
-                            });
-                            out.push(Triplet {
-                                original: self.map.get(&px).unwrap().clone(),
-                                next_to: self.map.get(&color).unwrap().clone(),
-                                orientation: Direction::Down,
-                            });
+        let max_y = input.height() as usize / cell_height - 1;
+        let max_x = input.width() as usize / cell_width - 1;
+        for y in 0..(input.height() as usize / cell_height) {
+            for x in 0..(input.width() as usize / cell_width) {
+                let color = all_cells[y][x].clone();
+                for dir in &directions {
+                    match dir {
+                        Direction::Up => {
+                            if y != 0 {
+                                let px = all_cells[y - 1][x].clone();
+                                out.push(Triplet {
+                                    original: self.map.get(&color).unwrap().clone(),
+                                    next_to: self.map.get(&px).unwrap().clone(),
+                                    orientation: Direction::Up,
+                                });
+                                out.push(Triplet {
+                                    original: self.map.get(&px).unwrap().clone(),
+                                    next_to: self.map.get(&color).unwrap().clone(),
+                                    orientation: Direction::Down,
+                                });
+                            }
                         }
-                    }
-                    Direction::Down => {
-                        if input.in_bounds(x, y + 1) {
-                            let px = input.get_pixel(x, y + 1);
-                            out.push(Triplet {
-                                original: self.map.get(&color).unwrap().clone(),
-                                next_to: self.map.get(&px).unwrap().clone(),
-                                orientation: Direction::Down,
-                            });
-                            out.push(Triplet {
-                                original: self.map.get(&px).unwrap().clone(),
-                                next_to: self.map.get(&color).unwrap().clone(),
-                                orientation: Direction::Up,
-                            });
+                        Direction::Down => {
+                            if y < max_y {
+                                let px = all_cells[y + 1][x].clone();
+                                out.push(Triplet {
+                                    original: self.map.get(&color).unwrap().clone(),
+                                    next_to: self.map.get(&px).unwrap().clone(),
+                                    orientation: Direction::Down,
+                                });
+                                out.push(Triplet {
+                                    original: self.map.get(&px).unwrap().clone(),
+                                    next_to: self.map.get(&color).unwrap().clone(),
+                                    orientation: Direction::Up,
+                                });
+                            }
                         }
-                    }
-                    Direction::Left => {
-                        if x != 0 && input.in_bounds(x - 1, y) {
-                            let px = input.get_pixel(x - 1, y);
-                            out.push(Triplet {
-                                original: self.map.get(&color).unwrap().clone(),
-                                next_to: self.map.get(&px).unwrap().clone(),
-                                orientation: Direction::Left,
-                            });
-                            out.push(Triplet {
-                                original: self.map.get(&px).unwrap().clone(),
-                                next_to: self.map.get(&color).unwrap().clone(),
-                                orientation: Direction::Right,
-                            });
+                        Direction::Left => {
+                            if x != 0 {
+                                let px = all_cells[y][x - 1].clone();
+                                out.push(Triplet {
+                                    original: self.map.get(&color).unwrap().clone(),
+                                    next_to: self.map.get(&px).unwrap().clone(),
+                                    orientation: Direction::Left,
+                                });
+                                out.push(Triplet {
+                                    original: self.map.get(&px).unwrap().clone(),
+                                    next_to: self.map.get(&color).unwrap().clone(),
+                                    orientation: Direction::Right,
+                                });
+                            }
                         }
-                    }
-                    Direction::Right => {
-                        if input.in_bounds(x + 1, y) {
-                            let px = input.get_pixel(x + 1, y);
-                            out.push(Triplet {
-                                original: self.map.get(&color).unwrap().clone(),
-                                next_to: self.map.get(&px).unwrap().clone(),
-                                orientation: Direction::Right,
-                            });
-                            out.push(Triplet {
-                                original: self.map.get(&px).unwrap().clone(),
-                                next_to: self.map.get(&color).unwrap().clone(),
-                                orientation: Direction::Left,
-                            });
+                        Direction::Right => {
+                            if x < max_x {
+                                let px = all_cells[y][x + 1].clone();
+                                out.push(Triplet {
+                                    original: self.map.get(&color).unwrap().clone(),
+                                    next_to: self.map.get(&px).unwrap().clone(),
+                                    orientation: Direction::Right,
+                                });
+                                out.push(Triplet {
+                                    original: self.map.get(&px).unwrap().clone(),
+                                    next_to: self.map.get(&color).unwrap().clone(),
+                                    orientation: Direction::Left,
+                                });
+                            }
                         }
                     }
                 }
@@ -153,7 +188,7 @@ impl Generator {
     fn generate(&mut self, width: usize, height: usize) -> Result<DynamicImage, String> {
         let mut rng = thread_rng();
         // all the waves
-        let mut waves = vec![vec![self.map.keys().collect::<Vec<&Rgba<u8>>>(); width]; height];
+        let mut waves = vec![vec![self.map.keys().collect::<Vec<&Cell>>(); width]; height];
         // seed with a random square
         let mut seed = Some((0, 0));
         let mut temp = (0, 0);
@@ -232,16 +267,16 @@ impl Generator {
                 if rule.original == *self.map.get(color).unwrap() {
                     match rule.orientation {
                         Direction::Left => {
-                            left_possibles.push(*self.inv_map.get(&rule.next_to).unwrap())
+                            left_possibles.push(self.inv_map.get(&rule.next_to).unwrap().clone())
                         }
                         Direction::Right => {
-                            right_possibles.push(*self.inv_map.get(&rule.next_to).unwrap())
+                            right_possibles.push(self.inv_map.get(&rule.next_to).unwrap().clone())
                         }
                         Direction::Up => {
-                            up_possibles.push(*self.inv_map.get(&rule.next_to).unwrap())
+                            up_possibles.push(self.inv_map.get(&rule.next_to).unwrap().clone())
                         }
                         Direction::Down => {
-                            down_possibles.push(*self.inv_map.get(&rule.next_to).unwrap())
+                            down_possibles.push(self.inv_map.get(&rule.next_to).unwrap().clone())
                         }
                     }
                 }
@@ -295,7 +330,7 @@ impl Generator {
                 let same = check_square
                     .iter()
                     .filter(|&x| possibles.contains(x))
-                    .collect::<Vec<&&Rgba<u8>>>();
+                    .collect::<Vec<&&Cell>>();
                 *check_square = same.iter().map(|&&x| x).collect();
             }
         }
@@ -303,7 +338,12 @@ impl Generator {
         let mut out = DynamicImage::new_rgb8(width as u32, height as u32);
         for (y, row) in waves.iter().enumerate() {
             for (x, wave) in row.iter().enumerate() {
-                out.put_pixel(x as u32, y as u32, *wave[0]);
+                let cell = wave[0];
+                for (y_in, row) in cell.inner.iter().enumerate() {
+                    for (x_in, color) in row.iter().enumerate() {
+                        out.put_pixel((x + x_in) as u32, (y + y_in) as u32, *color);
+                    }
+                }
             }
         }
 
